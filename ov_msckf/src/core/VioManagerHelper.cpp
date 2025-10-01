@@ -105,6 +105,8 @@ bool VioManager::try_to_initialize(const ov_core::CameraData &message) {
     // Otherwise we can initialize right away as the zero velocity will handle the stationary case
     bool wait_for_jerk = (updaterZUPT == nullptr);
     bool success = initializer->initialize(timestamp, covariance, order, state->_imu, wait_for_jerk);
+    bool wait_for_jerk_1 = (updaterZUPT_1 == nullptr);
+    bool success_1 = initializer->initialize(timestamp, covariance, order, state_1->_imu, wait_for_jerk);
 
     // If we have initialized successfully we will set the covariance and state elements as needed
     // TODO: set the clones and SLAM features here so we can start updating right away...
@@ -162,6 +164,70 @@ bool VioManager::try_to_initialize(const ov_core::CameraData &message) {
         StateHelper::marginalize_old_clone(state);
       }
       PRINT_DEBUG(YELLOW "[init]: moved the state forward %.2f seconds\n" RESET, state->_timestamp - timestamp);
+      thread_init_success = true;
+      camera_queue_init.clear();
+
+    } else {
+      auto init_rT2 = boost::posix_time::microsec_clock::local_time();
+      PRINT_DEBUG(YELLOW "[init]: failed initialization in %.4f seconds\n" RESET, (init_rT2 - init_rT1).total_microseconds() * 1e-6);
+      thread_init_success = false;
+      std::lock_guard<std::mutex> lck(camera_queue_init_mtx);
+      camera_queue_init.clear();
+    }
+     if (success_1) {
+
+      // Set our covariance (state should already be set in the initializer)
+      StateHelper::set_initial_covariance(state_1, covariance, order);
+
+      // Set the state time
+      state_1->_timestamp = timestamp;
+      startup_time = timestamp;
+
+      // Cleanup any features older than the initialization time
+      // Also increase the number of features to the desired amount during estimation
+      // NOTE: we will split the total number of features over all cameras uniformly
+      trackFEATS->get_feature_database()->cleanup_measurements(state_1->_timestamp);
+      trackFEATS->set_num_features(std::floor((double)params.num_pts / (double)params.state_options.num_cameras));
+      if (trackARUCO != nullptr) {
+        trackARUCO->get_feature_database()->cleanup_measurements(state_1->_timestamp);
+      }
+
+      // If we are moving then don't do zero velocity update4
+      if (state_1->_imu->vel().norm() > params.zupt_max_velocity) {
+        has_moved_since_zupt_1 = true;
+      }
+
+      // Else we are good to go, print out our stats
+      auto init_rT2 = boost::posix_time::microsec_clock::local_time();
+      PRINT_INFO(GREEN "[init]: successful initialization in %.4f seconds\n" RESET, (init_rT2 - init_rT1).total_microseconds() * 1e-6);
+      PRINT_INFO(GREEN "[init]: orientation = %.4f, %.4f, %.4f, %.4f\n" RESET, state_1->_imu->quat()(0), state_1->_imu->quat()(1),
+                 state_1->_imu->quat()(2), state_1->_imu->quat()(3));
+      PRINT_INFO(GREEN "[init]: bias gyro = %.4f, %.4f, %.4f\n" RESET, state_1->_imu->bias_g()(0), state_1->_imu->bias_g()(1),
+                 state_1->_imu->bias_g()(2));
+      PRINT_INFO(GREEN "[init]: velocity = %.4f, %.4f, %.4f\n" RESET, state_1->_imu->vel()(0), state_1->_imu->vel()(1), state_1->_imu->vel()(2));
+      PRINT_INFO(GREEN "[init]: bias accel = %.4f, %.4f, %.4f\n" RESET, state_1->_imu->bias_a()(0), state_1->_imu->bias_a()(1),
+                 state_1->_imu->bias_a()(2));
+      PRINT_INFO(GREEN "[init]: position = %.4f, %.4f, %.4f\n" RESET, state_1->_imu->pos()(0), state_1->_imu->pos()(1), state_1->_imu->pos()(2));
+
+      // Remove any camera times that are order then the initialized time
+      // This can happen if the initialization has taken a while to perform
+      std::lock_guard<std::mutex> lck(camera_queue_init_mtx);
+      std::vector<double> camera_timestamps_to_init;
+      for (size_t i = 0; i < camera_queue_init.size(); i++) {
+        if (camera_queue_init.at(i) > timestamp) {
+          camera_timestamps_to_init.push_back(camera_queue_init.at(i));
+        }
+      }
+
+      // Now we have initialized we will propagate the state to the current timestep
+      // In general this should be ok as long as the initialization didn't take too long to perform
+      // Propagating over multiple seconds will become an issue if the initial biases are bad
+      size_t clone_rate = (size_t)((double)camera_timestamps_to_init.size() / (double)params.state_options.max_clone_size) + 1;
+      for (size_t i = 0; i < camera_timestamps_to_init.size(); i += clone_rate) {
+        propagator_1->propagate_and_clone(state_1, camera_timestamps_to_init.at(i));
+        StateHelper::marginalize_old_clone(state_1);
+      }
+      PRINT_DEBUG(YELLOW "[init]: moved the state forward %.2f seconds\n" RESET, state_1->_timestamp - timestamp);
       thread_init_success = true;
       camera_queue_init.clear();
 

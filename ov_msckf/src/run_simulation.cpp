@@ -55,15 +55,19 @@ int main(int argc, char **argv) {
 
   // Ensure we have a path, if the user passes it then we should use it
   std::string config_path = "unset_path_to_config.yaml";
+  std::string config_path_1 = "/home/aqubu/workspace/catkin_ws_ov/src/open_vins/config/test_xr1/estimator_config.yaml";
   if (argc > 1) {
     config_path = argv[1];
   }
 
 #if ROS_AVAILABLE == 1
   // Launch our ros node
-  ros::init(argc, argv, "run_simulation");
+  std::string node_name = "run_subscribe_msckf";
+  ros::init(argc, argv, node_name);
   auto nh = std::make_shared<ros::NodeHandle>("~");
+  auto nh_1 = std::make_shared<ros::NodeHandle>("~node");
   nh->param<std::string>("config_path", config_path, config_path);
+  nh_1->param<std::string>("config_path_1", config_path_1, config_path_1);
 #elif ROS_AVAILABLE == 2
   // Launch our ros node
   rclcpp::init(argc, argv);
@@ -76,8 +80,10 @@ int main(int argc, char **argv) {
 
   // Load the config
   auto parser = std::make_shared<ov_core::YamlParser>(config_path);
+  auto parser_1 = std::make_shared<ov_core::YamlParser>(config_path_1);
 #if ROS_AVAILABLE == 1
   parser->set_node_handler(nh);
+  parser_1->set_node_handler(nh_1);
 #elif ROS_AVAILABLE == 2
   parser->set_node(node);
 #endif
@@ -88,16 +94,18 @@ int main(int argc, char **argv) {
   ov_core::Printer::setPrintLevel(verbosity);
 
   // Create our VIO system
-  VioManagerOptions params;
+  VioManagerOptions params, params_1;
   params.print_and_load(parser);
+  params_1.print_and_load(parser_1);
   params.print_and_load_simulation(parser);
+  // params_1.print_and_load_simulation(parser_1);
   params.num_opencv_threads = 0; // for repeatability
   params.use_multi_threading_pubs = false;
   params.use_multi_threading_subs = false;
   sim = std::make_shared<Simulator>(params);
-  sys = std::make_shared<VioManager>(params);
+  sys = std::make_shared<VioManager>(params, params_1);
 #if ROS_AVAILABLE == 1
-  viz = std::make_shared<ROS1Visualizer>(nh, sys, sim);
+  viz = std::make_shared<ROS1Visualizer>(nh, nh_1, sys, sim);
 #elif ROS_AVAILABLE == 2
   viz = std::make_shared<ROS2Visualizer>(node, sys, sim);
 #endif

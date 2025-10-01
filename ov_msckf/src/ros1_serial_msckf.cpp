@@ -42,18 +42,24 @@ int main(int argc, char **argv) {
 
   // Ensure we have a path, if the user passes it then we should use it
   std::string config_path = "unset_path_to_config.yaml";
+  std::string config_path_1 = "/home/aqubu/workspace/catkin_ws_ov/src/open_vins/config/test_xr1/estimator_config.yaml";
   if (argc > 1) {
     config_path = argv[1];
   }
 
   // Launch our ros node
-  ros::init(argc, argv, "ros1_serial_msckf");
+  std::string node_name = "run_subscribe_msckf";
+  ros::init(argc, argv, node_name);
   auto nh = std::make_shared<ros::NodeHandle>("~");
+  auto nh_1 = std::make_shared<ros::NodeHandle>("~node");
   nh->param<std::string>("config_path", config_path, config_path);
+  nh_1->param<std::string>("config_path_1", config_path_1, config_path_1);
 
   // Load the config
   auto parser = std::make_shared<ov_core::YamlParser>(config_path);
+  auto parser_1 = std::make_shared<ov_core::YamlParser>(config_path_1);
   parser->set_node_handler(nh);
+  parser_1->set_node_handler(nh_1);
 
   // Verbosity
   std::string verbosity = "INFO";
@@ -61,13 +67,16 @@ int main(int argc, char **argv) {
   ov_core::Printer::setPrintLevel(verbosity);
 
   // Create our VIO system
-  VioManagerOptions params;
+  // VioManagerOptions params;
+  VioManagerOptions params, params_1;
   params.print_and_load(parser);
+  params_1.print_and_load(parser_1);
   // params.num_opencv_threads = 0; // uncomment if you want repeatability
   // params.use_multi_threading_pubs = 0; // uncomment if you want repeatability
   params.use_multi_threading_subs = false;
-  sys = std::make_shared<VioManager>(params);
-  viz = std::make_shared<ROS1Visualizer>(nh, sys);
+  params_1.use_multi_threading_subs = false;
+  sys = std::make_shared<VioManager>(params, params_1);
+  viz = std::make_shared<ROS1Visualizer>(nh, nh_1, sys);
 
   // Ensure we read in all parameters required
   if (!parser->successful()) {
@@ -207,7 +216,8 @@ int main(int argc, char **argv) {
     // IMU processing
     if (msgs.at(m).getTopic() == topic_imu) {
       // PRINT_DEBUG("processing imu = %.3f sec\n", msgs.at(m).getTime().toSec() - time_init.toSec());
-      viz->callback_inertial(msgs.at(m).instantiate<sensor_msgs::Imu>());
+      // viz->callback_inertial(msgs.at(m).instantiate<sensor_msgs::Imu>());
+      viz->callback_inertial();
     }
 
     // Camera processing

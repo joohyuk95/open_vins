@@ -354,6 +354,8 @@ struct VioManagerOptions {
     PRINT_DEBUG("  - gravity_mag: %.4f\n", gravity_mag);
     PRINT_DEBUG("  - gravity: %.3f, %.3f, %.3f\n", 0.0, 0.0, gravity_mag);
     PRINT_DEBUG("  - camera masks?: %d\n", use_mask);
+    PRINT_INFO("num_cam: %f\n", state_options.num_cameras);
+    
     if (state_options.num_cameras != (int)camera_intrinsics.size() || state_options.num_cameras != (int)camera_extrinsics.size()) {
       PRINT_ERROR(RED "[SIM]: camera calib size does not match max cameras...\n" RESET);
       PRINT_ERROR(RED "[SIM]: got %d but expected %d max cameras (camera_intrinsics)\n" RESET, (int)camera_intrinsics.size(),

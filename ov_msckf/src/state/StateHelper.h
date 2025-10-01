@@ -32,6 +32,7 @@ class Type;
 namespace ov_msckf {
 
 class State;
+class IMMEstimator;
 
 /**
  * @brief Helper which manipulates the State and its covariance.
@@ -228,6 +229,7 @@ public:
    * @param state Pointer to state
    */
   static void marginalize_slam(std::shared_ptr<State> state);
+  static std::shared_ptr<IMMEstimator> imm_1;
 
 private:
   /**

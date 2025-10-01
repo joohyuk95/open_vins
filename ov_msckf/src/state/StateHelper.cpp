@@ -26,12 +26,15 @@
 #include "types/Landmark.h"
 #include "utils/colors.h"
 #include "utils/print.h"
+#include "imm/IMMEstimator.h"
 
 #include <boost/math/distributions/chi_squared.hpp>
 
 using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
+std::shared_ptr<ov_msckf::IMMEstimator> ov_msckf::StateHelper::imm_1 = nullptr;
+
 
 void StateHelper::EKFPropagation(std::shared_ptr<State> state, const std::vector<std::shared_ptr<Type>> &order_NEW,
                                  const std::vector<std::shared_ptr<Type>> &order_OLD, const Eigen::MatrixXd &Phi,
@@ -137,6 +140,8 @@ void StateHelper::EKFUpdate(std::shared_ptr<State> state, const std::vector<std:
   for (const auto &var : state->_variables) {
     // Sum up effect of each subjacobian = K_i= \sum_m (P_im Hm^T)
     Eigen::MatrixXd M_i = Eigen::MatrixXd::Zero(var->size(), res.rows());
+    // std::cout << "M_i matrix size" << M_i.size() << std::endl;
+    // std::cout << "H_order size" << H_order.size() << std::endl;
     for (size_t i = 0; i < H_order.size(); i++) {
       std::shared_ptr<Type> meas_var = H_order[i];
       M_i.noalias() += state->_Cov.block(var->id(), meas_var->id(), var->size(), meas_var->size()) *
@@ -147,6 +152,25 @@ void StateHelper::EKFUpdate(std::shared_ptr<State> state, const std::vector<std:
 
   //==========================================================
   //==========================================================
+  // std::cout << "c---------ovariance matrix size before update state: " << state->_Cov.rows() << "x" << state->_Cov.cols() << std::endl;
+  // // std::cout << "covariance matrix size before update state 1: " << state_1->_Cov.rows() << "x" << state_1->_Cov.cols() << std::endl;
+
+  // int total_state_size = 0;
+  // for (const auto &var : state->_variables) {
+  //   total_state_size += var->size();
+  // }
+  // std::cout << "----------Total state size (sum of all variables): " << total_state_size << std::endl;
+  // std::cout << "----------Number of state variables: " << state->_variables.size() << std::endl;
+
+  // for (size_t i = 0; i < state->_variables.size(); i++) {
+  //   auto var = state->_variables[i];
+  //   std::cout << "-----Variable " << i
+  //             << "-----: type = " << typeid(*var).name()
+  //             << ", -------id = " << var->id()
+  //             << std::endl;
+  // }
+
+
   // Get covariance of the involved terms
   Eigen::MatrixXd P_small = StateHelper::get_marginal_covariance(state, H_order);
 
@@ -160,13 +184,36 @@ void StateHelper::EKFUpdate(std::shared_ptr<State> state, const std::vector<std:
   Eigen::MatrixXd Sinv = Eigen::MatrixXd::Identity(R.rows(), R.rows());
   S.selfadjointView<Eigen::Upper>().llt().solveInPlace(Sinv);
   Eigen::MatrixXd K = M_a * Sinv.selfadjointView<Eigen::Upper>();
+  // double mahabol = res.transpose() * Sinv * res;
+  // std::cout << "mahabol_ekfupdate" << mahabol << std::endl;
   // Eigen::MatrixXd K = M_a * S.inverse();
+  // std::cout << "Calling IMMEstimator::likelihood with S: " << Sinv.rows() << "x" << Sinv.cols()
+          // << ", res: " << res.size() << std::endl;
 
+  // imm_1 = std::make_shared<IMMEstimator>();
+  // imm_1->printDebugInfo();
+  // imm_1->likelihood(S, Sinv, res);
+  Eigen::VectorXd diags_1 = state->_Cov.diagonal();
+  // std::cout << "diagonal values before: \n" << diags_1.transpose() << std::endl;
+  Eigen::VectorXd k = (K * M_a.transpose()).diagonal();
+  // std::cout << "K_ma: \n" << k.transpose() << std::endl;
+  // Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig_before(state->_Cov);
+// std::cout << "Eigenvalues before EKF update:\n" << eig_before.eigenvalues().transpose() << std::endl;
   // Update Covariance
+  // std::cout << "Kma: \n" << K*M_a.transpose() << std::endl;
+  // std::cout << "-------------------------- :\n" << std::endl;
   state->_Cov.triangularView<Eigen::Upper>() -= K * M_a.transpose();
   state->_Cov = state->_Cov.selfadjointView<Eigen::Upper>();
+  state->_Cov = 0.5 * (state->_Cov + state->_Cov.transpose());
+
   // Cov -= K * M_a.transpose();
   // Cov = 0.5*(Cov+Cov.transpose());
+  
+  Eigen::VectorXd diags_2 = state->_Cov.diagonal();
+  // std::cout << "diagonal values after: \n" << diags_2.transpose() << std::endl;
+  // std::cout << "State :\n" << state->_Cov << std::endl;
+  // Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig_after(state->_Cov);
+// std::cout << "Eigenvalues AFTER EKF update:\n" << eig_after.eigenvalues().transpose() << std::endl;
 
   // We should check if we are not positive semi-definitate (i.e. negative diagionals is not s.p.d)
   Eigen::VectorXd diags = state->_Cov.diagonal();
@@ -594,6 +641,12 @@ void StateHelper::augment_clone(std::shared_ptr<State> state, Eigen::Matrix<doub
     PRINT_ERROR(RED "INVALID OBJECT RETURNED FROM STATEHELPER CLONE, EXITING!#!@#!@#\n" RESET);
     std::exit(EXIT_FAILURE);
   }
+  // std::cout << "Clone size (pose) ID: " << pose->id() << std::endl;
+
+  // If PoseJPL has specific methods to get size, you can call them here
+  // For example, if PoseJPL has a method `size()`, use it to get the number of state variables
+  // std::cout << "Pose size in terms of state variables: " << pose->size() << std::endl; // Adjust based on PoseJPL's methods
+
 
   // Append the new clone to our clone vector
   state->_clones_IMU[state->_timestamp] = pose;

@@ -31,6 +31,7 @@
 #include "utils/colors.h"
 #include "utils/print.h"
 #include "utils/quat_ops.h"
+#include "imm/IMMEstimator.h"
 
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/math/distributions/chi_squared.hpp>
@@ -55,7 +56,7 @@ UpdaterMSCKF::UpdaterMSCKF(UpdaterOptions &options, ov_core::FeatureInitializerO
   }
 }
 
-void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec) {
+void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec, std::shared_ptr<IMMEstimator> imm_shared, int model_id) {
 
   // Return if no features
   if (feature_vec.empty())
@@ -280,8 +281,61 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
 
   // Our noise is isotropic, so make it here after our compression
   Eigen::MatrixXd R_big = _options.sigma_pix_sq * Eigen::MatrixXd::Identity(res_big.rows(), res_big.rows());
+  // std::cout << "covariance matrix size before update state: " << state->_Cov.rows() << "x" << state->_Cov.cols() << std::endl;
+  // // std::cout << "covariance matrix size before update state 1: " << state_1->_Cov.rows() << "x" << state_1->_Cov.cols() << std::endl;
+
+  // int total_state_size = 0;
+  // for (const auto &var : state->_variables) {
+  //   total_state_size += var->size();
+  // }
+  // std::cout << "Total state size (sum of all variables): " << total_state_size << std::endl;
+  // std::cout << "Number of state variables: " << state->_variables.size() << std::endl;
 
   // 6. With all good features update the state
+  // ROS_INFO("After update, state_1 timestamp: %f", state->_timestamp);
+
+  Eigen::MatrixXd P_small = StateHelper::get_marginal_covariance(state, Hx_order_big);
+  // std::cout >> "rbig size = \n" << R_big.size() << std::endl;
+
+  // Residual covariance S = H*Cov*H' + R
+  Eigen::MatrixXd S(R_big.rows(), R_big.rows());
+  S.triangularView<Eigen::Upper>() = Hx_big * P_small * Hx_big.transpose();
+  S.triangularView<Eigen::Upper>() += R_big;
+  // Eigen::MatrixXd S = H * P_small * H.transpose() + R;
+  // std::cout << "residual size: " << res_big.size() << std::endl;
+  // std::cout << "S size: " << S.rows() << std::endl;
+
+
+  // // Invert our S (should we use a more stable method here??)
+  Eigen::MatrixXd Sinv = Eigen::MatrixXd::Identity(R_big.rows(), R_big.rows());
+  S.selfadjointView<Eigen::Upper>().llt().solveInPlace(Sinv);
+
+  S = S.selfadjointView<Eigen::Upper>();
+  
+  // std::cout << "S matrix:\n" << S << std::endl;
+
+  int slice_num = std::min<int>(20, res_big.size());
+  Eigen::VectorXd res_small = res_big.head(slice_num);
+  Eigen::MatrixXd S_small = S.topLeftCorner(slice_num, slice_num);
+  Eigen::MatrixXd Sinv_small = Eigen::MatrixXd::Identity(slice_num, slice_num);
+  S_small.selfadjointView<Eigen::Upper>().llt().solveInPlace(Sinv_small);
+
+  // double mahabol = res_big.transpose() * Sinv * res_big;
+  double mahabol = res_small.transpose() * Sinv_small * res_small;
+
+  // std::cout << "mahabol_updatemsckf" << mahabol <<"---" << model_id << std::endl;
+
+  // imm_shared = std::make_shared<IMMEstimator>();
+  // imm_shared->printDebugInfo();
+  // std::cout << "residual size: " << res_big.size() << std::endl;
+  // std::cout << "residual size small: " << res_small.size() << std::endl;
+
+  // std::cout << "S size: " << S.rows() << std::endl;
+  // std::cout << "S sizesmall: " << S_small.rows() << std::endl;
+
+  double likelihood = imm_shared->likelihood(S_small, Sinv_small, res_small);
+  imm_shared->record_likelihood(model_id, likelihood);
+
   StateHelper::EKFUpdate(state, Hx_order_big, Hx_big, res_big, R_big);
   rT5 = boost::posix_time::microsec_clock::local_time();
 

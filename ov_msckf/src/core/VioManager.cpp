@@ -42,12 +42,13 @@
 #include "update/UpdaterMSCKF.h"
 #include "update/UpdaterSLAM.h"
 #include "update/UpdaterZeroVelocity.h"
+#include "imm/IMMEstimator.h"
 
 using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
 
-VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false), thread_init_success(false) {
+VioManager::VioManager(VioManagerOptions &params_, VioManagerOptions &params_1_) : thread_init_running(false), thread_init_success(false) {
 
   // Nice startup message
   PRINT_DEBUG("=======================================\n");
@@ -61,13 +62,29 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
   params.print_and_load_state();
   params.print_and_load_trackers();
 
+  this->params_1 = params_1_;
+  params_1.print_and_load_estimator();
+  params_1.print_and_load_noise();
+  params_1.print_and_load_state();
+  params_1.print_and_load_trackers();
+
   // This will globally set the thread count we will use
   // -1 will reset to the system default threading (usually the num of cores)
   cv::setNumThreads(params.num_opencv_threads);
+  cv::setNumThreads(params_1.num_opencv_threads);
   cv::setRNGSeed(0);
 
   // Create the state!!
   state = std::make_shared<State>(params.state_options);
+  std::cout << "setting opencv threads " << params.num_opencv_threads << std::endl;
+  std::cout << "setting opencv threads " << params_1.num_opencv_threads << std::endl;
+  // ROS_INFO("state initialized: %p", (void*)state.get());
+  state_1 = std::make_shared<State>(params_1.state_options);
+  // ROS_INFO("state1 initialized: %p", (void*)state1.get());
+
+  combined_state = std::make_shared<State>(params.state_options);
+
+
 
   // Set the IMU intrinsics
   state->_calib_imu_dw->set_value(params.vec_dw);
@@ -81,12 +98,35 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
   state->_calib_imu_ACCtoIMU->set_value(params.q_ACCtoIMU);
   state->_calib_imu_ACCtoIMU->set_fej(params.q_ACCtoIMU);
 
+  // //aqeel
+  state_1->_calib_imu_dw->set_value(params_1.vec_dw);
+  state_1->_calib_imu_dw->set_fej(params_1.vec_dw);
+  state_1->_calib_imu_da->set_value(params_1.vec_da);
+  state_1->_calib_imu_da->set_fej(params_1.vec_da);
+  state_1->_calib_imu_tg->set_value(params_1.vec_tg);
+  state_1->_calib_imu_tg->set_fej(params_1.vec_tg);
+  state_1->_calib_imu_GYROtoIMU->set_value(params_1.q_GYROtoIMU);
+  state_1->_calib_imu_GYROtoIMU->set_fej(params_1.q_GYROtoIMU);
+  state_1->_calib_imu_ACCtoIMU->set_value(params_1.q_ACCtoIMU);
+  state_1->_calib_imu_ACCtoIMU->set_fej(params_1.q_ACCtoIMU);
+
   // Timeoffset from camera to IMU
   Eigen::VectorXd temp_camimu_dt;
   temp_camimu_dt.resize(1);
   temp_camimu_dt(0) = params.calib_camimu_dt;
+  ROS_INFO("Setting time offset for state: %f", temp_camimu_dt(0));  // Before setting
   state->_calib_dt_CAMtoIMU->set_value(temp_camimu_dt);
   state->_calib_dt_CAMtoIMU->set_fej(temp_camimu_dt);
+  ROS_INFO("Time offset set for state: %f", state->_calib_dt_CAMtoIMU->value()(0));  // After setting
+
+  // //aqeel
+  Eigen::VectorXd temp_camimu_dt_1;
+  temp_camimu_dt_1.resize(1);
+  temp_camimu_dt_1(0) = params_1.calib_camimu_dt;
+  ROS_INFO("Setting time offset for state1: %f", temp_camimu_dt_1(0));  // Before setting
+  state_1->_calib_dt_CAMtoIMU->set_value(temp_camimu_dt_1);
+  state_1->_calib_dt_CAMtoIMU->set_fej(temp_camimu_dt_1);
+  ROS_INFO("Time offset set for state1: %f", state_1->_calib_dt_CAMtoIMU->value()(0));  // After setting
 
   // Loop through and load each of the cameras
   state->_cam_intrinsics_cameras = params.camera_intrinsics;
@@ -95,7 +135,20 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
     state->_cam_intrinsics.at(i)->set_fej(params.camera_intrinsics.at(i)->get_value());
     state->_calib_IMUtoCAM.at(i)->set_value(params.camera_extrinsics.at(i));
     state->_calib_IMUtoCAM.at(i)->set_fej(params.camera_extrinsics.at(i));
+    ROS_INFO("Camera extrinsics value after setting: %f", state->_calib_IMUtoCAM.at(i)->value()(0));  // After setting
   }
+
+  // //aqeel
+  state_1->_cam_intrinsics_cameras = params_1.camera_intrinsics;
+  for (int i = 0; i < state_1->_options.num_cameras; i++) {
+    state_1->_cam_intrinsics.at(i)->set_value(params_1.camera_intrinsics.at(i)->get_value());
+    state_1->_cam_intrinsics.at(i)->set_fej(params_1.camera_intrinsics.at(i)->get_value());
+    state_1->_calib_IMUtoCAM.at(i)->set_value(params_1.camera_extrinsics.at(i));
+    state_1->_calib_IMUtoCAM.at(i)->set_fej(params_1.camera_extrinsics.at(i));
+    ROS_INFO("Camera extrinsics value after setting: %f", state_1->_calib_IMUtoCAM.at(i)->value()(0));  // After setting
+  }
+  // ROS_INFO("Latest IMU timestamp in state:::::::::::::::::: %f", state->_timestamp);
+  // ROS_INFO("Latest IMU timestamp in state_1:::::::::::::::::: %f", state_1->_timestamp);
 
   //===================================================================================
   //===================================================================================
@@ -144,36 +197,53 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
     trackARUCO = std::shared_ptr<TrackBase>(new TrackAruco(state->_cam_intrinsics_cameras, state->_options.max_aruco_features,
                                                            params.use_stereo, params.histogram_method, params.downsize_aruco));
   }
-
+  imm_shared = std::make_shared<IMMEstimator>();
+  // imm_shared->printDebugInfo();
   // Initialize our state propagator
   propagator = std::make_shared<Propagator>(params.imu_noises, params.gravity_mag);
+  // //aqeel
+  propagator_1 = std::make_shared<Propagator>(params_1.imu_noises, params_1.gravity_mag);
 
   // Our state initialize
   initializer = std::make_shared<ov_init::InertialInitializer>(params.init_options, trackFEATS->get_feature_database());
 
+  // //aqeel
+  initializer_1 = std::make_shared<ov_init::InertialInitializer>(params_1.init_options, trackFEATS->get_feature_database());
+
   // Make the updater!
   updaterMSCKF = std::make_shared<UpdaterMSCKF>(params.msckf_options, params.featinit_options);
   updaterSLAM = std::make_shared<UpdaterSLAM>(params.slam_options, params.aruco_options, params.featinit_options);
+
+  // //aqeel
+  updaterMSCKF_1 = std::make_shared<UpdaterMSCKF>(params_1.msckf_options, params_1.featinit_options);
+  updaterSLAM_1 = std::make_shared<UpdaterSLAM>(params_1.slam_options, params_1.aruco_options, params_1.featinit_options); 
 
   // If we are using zero velocity updates, then create the updater
   if (params.try_zupt) {
     updaterZUPT = std::make_shared<UpdaterZeroVelocity>(params.zupt_options, params.imu_noises, trackFEATS->get_feature_database(),
                                                         propagator, params.gravity_mag, params.zupt_max_velocity,
                                                         params.zupt_noise_multiplier, params.zupt_max_disparity);
+
+    // //aqeel
+    updaterZUPT_1 = std::make_shared<UpdaterZeroVelocity>(params_1.zupt_options, params_1.imu_noises, trackFEATS->get_feature_database(),
+                                                        propagator_1, params_1.gravity_mag, params_1.zupt_max_velocity,
+                                                        params_1.zupt_noise_multiplier, params_1.zupt_max_disparity);
   }
 }
 
 void VioManager::feed_measurement_imu(const ov_core::ImuData &message) {
-
   // The oldest time we need IMU with is the last clone
   // We shouldn't really need the whole window, but if we go backwards in time we will
   double oldest_time = state->margtimestep();
+  // ROS_INFO("oldest time_imu: %f" , oldest_time);
+  // ROS_INFO("message timestamp: %f" , message.timestamp);
   if (oldest_time > state->_timestamp) {
     oldest_time = -1;
   }
   if (!is_initialized_vio) {
     oldest_time = message.timestamp - params.init_options.init_window_time + state->_calib_dt_CAMtoIMU->value()(0) - 0.10;
   }
+  // ROS_INFO("before doing feed_imu in feed_measurement state : %f", state->_timestamp);
   propagator->feed_imu(message, oldest_time);
 
   // Push back to our initializer
@@ -184,6 +254,35 @@ void VioManager::feed_measurement_imu(const ov_core::ImuData &message) {
   // Push back to the zero velocity updater if it is enabled
   // No need to push back if we are just doing the zv-update at the begining and we have moved
   if (is_initialized_vio && updaterZUPT != nullptr && (!params.zupt_only_at_beginning || !has_moved_since_zupt)) {
+    updaterZUPT->feed_imu(message, oldest_time);
+  }
+}
+
+// //edited aqeel
+
+void VioManager::feed_measurement_imu_1(const ov_core::ImuData &message) {
+
+  // The oldest time we need IMU with is the last clone
+  // We shouldn't really need the whole window, but if we go backwards in time we will
+  double oldest_time = state_1->margtimestep();
+  // ROS_INFO("oldest time_imu_1: %f", oldest_time);
+
+  if (oldest_time > state_1->_timestamp) {
+    oldest_time = -1;
+  }
+  if (!is_initialized_vio) {
+    oldest_time = message.timestamp - params_1.init_options.init_window_time + state_1->_calib_dt_CAMtoIMU->value()(0) - 0.10;
+  }
+  // ROS_INFO("before doing feed imu in feed_measurement_1 state_1 : %f", state_1->_timestamp);
+  propagator_1->feed_imu(message, oldest_time);
+  // Push back to our initializer
+  if (!is_initialized_vio) {
+    initializer->feed_imu(message, oldest_time);
+  }
+
+  // Push back to the zero velocity updater if it is enabled
+  // No need to push back if we are just doing the zv-update at the begining and we have moved
+  if (is_initialized_vio && updaterZUPT != nullptr && (!params.zupt_only_at_beginning || !has_moved_since_zupt_1)) {
     updaterZUPT->feed_imu(message, oldest_time);
   }
 }
@@ -228,6 +327,20 @@ void VioManager::feed_measurement_simulation(double timestamp, const std::vector
       propagator->clean_old_imu_measurements(timestamp + state->_calib_dt_CAMtoIMU->value()(0) - 0.10);
       updaterZUPT->clean_old_imu_measurements(timestamp + state->_calib_dt_CAMtoIMU->value()(0) - 0.10);
       propagator->invalidate_cache();
+      return;
+    }
+  }
+  if (is_initialized_vio && updaterZUPT != nullptr && (!params_1.zupt_only_at_beginning || !has_moved_since_zupt_1)) {
+    // If the same state time, use the previous timestep decision
+    if (state_1->_timestamp != timestamp) {
+      ROS_WARN("State 1 timestamp mismatch: state_1 = %f, timestamp = %f", state_1->_timestamp, timestamp);
+      did_zupt_update_1 = updaterZUPT->try_update(state_1, timestamp);
+    }
+    if (did_zupt_update_1) {
+      assert(state_1->_timestamp == timestamp);
+      propagator_1->clean_old_imu_measurements(timestamp + state_1->_calib_dt_CAMtoIMU->value()(0) - 0.10);
+      updaterZUPT->clean_old_imu_measurements(timestamp + state_1->_calib_dt_CAMtoIMU->value()(0) - 0.10);
+      propagator_1->invalidate_cache();
       return;
     }
   }
@@ -304,6 +417,19 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
       return;
     }
   }
+  if (is_initialized_vio && updaterZUPT != nullptr && (!params_1.zupt_only_at_beginning || !has_moved_since_zupt_1)) {
+    // If the same state time, use the previous timestep decision
+    if (state_1->_timestamp != message.timestamp) {
+      did_zupt_update_1 = updaterZUPT->try_update(state_1, message.timestamp);
+    }
+    if (did_zupt_update_1) {
+      assert(state_1->_timestamp == message.timestamp);
+      propagator_1->clean_old_imu_measurements(message.timestamp + state_1->_calib_dt_CAMtoIMU->value()(0) - 0.10);
+      updaterZUPT->clean_old_imu_measurements(message.timestamp + state_1->_calib_dt_CAMtoIMU->value()(0) - 0.10);
+      propagator_1->invalidate_cache();
+      return;
+    }
+  }
 
   // If we do not have VIO initialization, then try to initialize
   // TODO: Or if we are trying to reset the system, then do that here!
@@ -315,6 +441,11 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
       return;
     }
   }
+
+
+  // ROS_INFO("Processing camera frame at timestamp: %f", message.timestamp);
+  // ROS_INFO("Latest IMU timestamp in state: %f", state->_timestamp);
+  // ROS_INFO("Latest IMU timestamp in state_1: %f", state_1->_timestamp);
 
   // Call on our propagate and update function
   do_feature_propagate_update(message);
@@ -332,15 +463,44 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
                   (message.timestamp - state->_timestamp));
     return;
   }
+  if (state_1->_timestamp > message.timestamp) {
+    PRINT_WARNING(YELLOW "image received out of order, unable to do anything (prop dt = %3f)\n" RESET,
+                  (message.timestamp - state_1->_timestamp));
+    return;
+  }
+  // ROS_INFO("state timestamp : %f", state->_timestamp);
+
+  // if (state1->_timestamp > message.timestamp) {
+  //   PRINT_WARNING(YELLOW "image received out of order, unable to do anything (prop dt = %3f)\n" RESET,
+  //                 (message.timestamp - state1->_timestamp));
+  //   return;
+  // }
+  
+//   Eigen::MatrixXd mixing_probs = imm_shared->mixingProbabilities();
+
+
 
   // Propagate the state forward to the current update time
   // Also augment it with a new clone!
   // NOTE: if the state is already at the given time (can happen in sim)
   // NOTE: then no need to prop since we already are at the desired timestep
+  // ROS_INFO("Before update, state timestamp: %f", state->_timestamp);
   if (state->_timestamp != message.timestamp) {
+    // ROS_INFO("Propagating state to timestamp: %f", message.timestamp);
     propagator->propagate_and_clone(state, message.timestamp);
   }
+  // ROS_INFO("After update, state timestamp: %f", state->_timestamp);
   rT3 = boost::posix_time::microsec_clock::local_time();
+  // ROS_INFO("Before update, state_1 timestamp: %f", state_1->_timestamp);
+  if (state_1->_timestamp != message.timestamp) {
+    // ROS_INFO("Propagating state_1 to timestamp: %f", message.timestamp);
+    propagator_1->propagate_and_clone(state_1, message.timestamp);
+  }
+  Eigen::VectorXd diags_2 = state->_Cov.diagonal();
+  // std::cout << "diagonal values vio: \n" << diags_2.transpose() << std::endl;
+
+
+  // ROS_INFO("After update, state_1 timestamp: %f", state_1->_timestamp);
 
   // If we have not reached max clones, we should just return...
   // This isn't super ideal, but it keeps the logic after this easier...
@@ -348,6 +508,11 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   if ((int)state->_clones_IMU.size() < std::min(state->_options.max_clone_size, 5)) {
     PRINT_DEBUG("waiting for enough clone states (%d of %d)....\n", (int)state->_clones_IMU.size(),
                 std::min(state->_options.max_clone_size, 5));
+    return;
+  }
+  if ((int)state_1->_clones_IMU.size() < std::min(state_1->_options.max_clone_size, 5)) {
+    PRINT_DEBUG("waiting for enough clone states (%d of %d)....\n", (int)state_1->_clones_IMU.size(),
+                std::min(state_1->_options.max_clone_size, 5));
     return;
   }
 
@@ -358,6 +523,12 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     return;
   }
   has_moved_since_zupt = true;
+  if (state_1->_timestamp != message.timestamp) {
+    PRINT_WARNING(RED "[PROP]: Propagator unable to propagate the state forward in time!\n" RESET);
+    PRINT_WARNING(RED "[PROP]: It has been %.3f since last time we propagated\n" RESET, message.timestamp - state_1->_timestamp);
+    return;
+  }
+  has_moved_since_zupt_1 = true;
 
   //===================================================================================
   // MSCKF features and KLT tracks that are SLAM features
@@ -367,6 +538,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   // We explicitly request features that have not been deleted (used) in another update step
   std::vector<std::shared_ptr<Feature>> feats_lost, feats_marg, feats_slam;
   feats_lost = trackFEATS->get_feature_database()->features_not_containing_newer(state->_timestamp, false, true);
+  // ROS_INFO("state clone size %d", (int)state->_clones_IMU.size());
+  // ROS_INFO("state_1 clone size %d", (int)state_1->_clones_IMU.size());
 
   // Don't need to get the oldest features until we reach our max number of clones
   if ((int)state->_clones_IMU.size() > state->_options.max_clone_size || (int)state->_clones_IMU.size() > 5) {
@@ -479,7 +652,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   // These are ones that where not successfully tracked into the current frame
   // We do *NOT* marginalize out our aruco tags landmarks
   StateHelper::marginalize_slam(state);
-
+  StateHelper::marginalize_slam(state_1);
   // Separate our SLAM features into new ones, and old ones
   std::vector<std::shared_ptr<Feature>> feats_slam_DELAYED, feats_slam_UPDATE;
   for (size_t i = 0; i < feats_slam.size(); i++) {
@@ -517,13 +690,41 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   };
   std::sort(featsup_MSCKF.begin(), featsup_MSCKF.end(), compare_feat);
 
+
   // Pass them to our MSCKF updater
   // NOTE: if we have more then the max, we select the "best" ones (i.e. max tracks) for this update
   // NOTE: this should only really be used if you want to track a lot of features, or have limited computational resources
   if ((int)featsup_MSCKF.size() > state->_options.max_msckf_in_update)
     featsup_MSCKF.erase(featsup_MSCKF.begin(), featsup_MSCKF.end() - state->_options.max_msckf_in_update);
-  updaterMSCKF->update(state, featsup_MSCKF);
+
+  auto clone_features = [](const std::vector<std::shared_ptr<Feature>> &original) {
+    std::vector<std::shared_ptr<Feature>> cloned;
+    for (const auto &feat : original) {
+      cloned.push_back(std::make_shared<Feature>(*feat)); 
+    }
+    return cloned;
+  };
+
+  auto feats_model0 = clone_features(featsup_MSCKF);
+  auto feats_model1 = clone_features(featsup_MSCKF);
+
+  updaterMSCKF->update(state, feats_model0, imm_shared, 0);
+  updaterMSCKF->update(state_1, feats_model1, imm_shared, 1);
+
+  
+  // updaterMSCKF->update(state, featsup_MSCKF, imm_shared, 0);
+  // updaterMSCKF->update(state_1, featsup_MSCKF, imm_shared, 1);
+  imm_shared->updateModelProbabilities(state->_timestamp);
+
+  
+  // update_count++;
+  // if(update_count % save_every_n == 0) {
+  //  imm_shared->saveModeProbHistoryCSV("mode_probabilities.csv");
+  // }
+  imm_shared->saveModeProbHistoryCSV("/home/aqubu/workspace/rosbags/mode_probabilities.csv");
+
   propagator->invalidate_cache();
+  propagator_1->invalidate_cache();
   rT4 = boost::posix_time::microsec_clock::local_time();
 
   // Perform SLAM delay init and update
@@ -538,13 +739,16 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     feats_slam_UPDATE.erase(feats_slam_UPDATE.begin(),
                             feats_slam_UPDATE.begin() + std::min(state->_options.max_slam_in_update, (int)feats_slam_UPDATE.size()));
     // Do the update
-    updaterSLAM->update(state, featsup_TEMP);
+    // updaterSLAM->update(state, featsup_TEMP);
+    // updaterSLAM->update(state_1, featsup_TEMP);
     feats_slam_UPDATE_TEMP.insert(feats_slam_UPDATE_TEMP.end(), featsup_TEMP.begin(), featsup_TEMP.end());
     propagator->invalidate_cache();
+    // propagator_1->invalidate_cache();
   }
   feats_slam_UPDATE = feats_slam_UPDATE_TEMP;
   rT5 = boost::posix_time::microsec_clock::local_time();
-  updaterSLAM->delayed_init(state, feats_slam_DELAYED);
+  // updaterSLAM->delayed_init(state, feats_slam_DELAYED);
+  // updaterSLAM_1->delayed_init(state, feats_slam_DELAYED);
   rT6 = boost::posix_time::microsec_clock::local_time();
 
   //===================================================================================
@@ -582,7 +786,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
 
   // First do anchor change if we are about to lose an anchor pose
-  updaterSLAM->change_anchors(state);
+  // updaterSLAM->change_anchors(state);
 
   // Cleanup any features older than the marginalization time
   if ((int)state->_clones_IMU.size() > state->_options.max_clone_size) {
@@ -592,9 +796,365 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     }
   }
 
+  if ((int)state_1->_clones_IMU.size() > state_1->_options.max_clone_size) {
+    trackFEATS->get_feature_database()->cleanup_measurements(state_1->margtimestep());
+    if (trackARUCO != nullptr) {
+      trackARUCO->get_feature_database()->cleanup_measurements(state_1->margtimestep());
+    }
+  }
+ 
   // Finally marginalize the oldest clone if needed
   StateHelper::marginalize_old_clone(state);
+  StateHelper::marginalize_old_clone(state_1);
   rT7 = boost::posix_time::microsec_clock::local_time();
+
+  // std::cout << "-------covariance matrix size before update state: " << state->_Cov.rows() << "x" << state->_Cov.cols() << std::endl;
+  // std::cout << "covariance matrix size before update state 1: " << state_1->_Cov.rows() << "x" << state_1->_Cov.cols() << std::endl;
+  // std::cout << "imu state size: " << state->_imu() << std::endl;
+  // int total_state_size_1 = 0;
+  // for (const auto &var : state->_variables) {
+  //   total_state_size_1 += var->size();
+  //   std::cout << "variables: " << var->value() << std::endl;
+  // }
+  // std::cout << "Total state size (sum of all variables): " << total_state_size_1 << std::endl;
+  // std::cout << "Number of state variables: " << state->_variables.size() << std::endl;
+  // for (const auto &var : state_1->_variables) {
+  //   std::cout << "variables_1: " << var->value() << std::endl;
+  // }
+
+
+std::pair<Eigen::MatrixXd, Eigen::VectorXd> result = imm_shared->mixingProbabilities();
+Eigen::MatrixXd mixing_probs = result.first;
+std::cout << "mixing probs \n" << mixing_probs << std::endl;
+Eigen::VectorXd mu = result.second;
+
+// Step 1: Compute total size based on values
+int total_state_size = 0;
+for (const auto& var : state->_variables)
+    total_state_size += var->value().size();
+    
+Eigen::VectorXd x0(total_state_size);
+Eigen::VectorXd x1(total_state_size);
+Eigen::VectorXd xmix0(total_state_size);  // For filter 0
+Eigen::VectorXd xmix1(total_state_size);  // For filter 1
+
+Eigen::MatrixXd P0 = state->_Cov;
+Eigen::MatrixXd P1 = state_1->_Cov;
+// std::cout << "P0 : \n" << P0 << std::endl;
+
+int idx = 0;
+for (size_t i = 0; i < state->_variables.size(); i++) {
+    Eigen::VectorXd var0 = state->_variables[i]->value();  // Eigen vector
+    Eigen::VectorXd var1 = state_1->_variables[i]->value();  // Eigen vector
+
+    int len = var0.size();  // length of vector
+
+    if (len >= 4) {
+        Eigen::VectorXd q0 = var0.segment<4>(0);
+        Eigen::VectorXd q1 = var1.segment<4>(0);
+        // std::cout << "q0: \n" << q0 << std::endl;
+
+        // Convert quaternions to rotation matrices
+        Eigen::Matrix3d R0 = quat_2_Rot(q0);
+        Eigen::Matrix3d R1 = quat_2_Rot(q1);
+
+        // Convert to tangent space (log map)
+        Eigen::Vector3d log0 = log_so3(R0);
+        Eigen::Vector3d log1 = log_so3(R1);
+
+        Eigen::Vector3d qRmix0 = mixing_probs(0, 0) * log0 + mixing_probs(0, 1) * log1;
+        Eigen::Vector3d qRmix1 = mixing_probs(1, 0) * log0 + mixing_probs(1, 1) * log1; 
+
+        Eigen::Matrix3d Rmix0 = exp_so3(qRmix0);
+        Eigen::Matrix3d Rmix1 = exp_so3(qRmix1);
+
+        // Convert to quaternion
+        Eigen::VectorXd qmix0 = rot_2_quat(Rmix0);  // size 4
+        Eigen::VectorXd qmix1 = rot_2_quat(Rmix1);  // size 4
+
+        // Fill into xmix
+        xmix0.segment(idx, 4) = qmix0;
+        xmix1.segment(idx, 4) = qmix1;
+
+        if (len > 4) {
+            Eigen::VectorXd rest0 = var0.tail(len - 4);
+            Eigen::VectorXd rest1 = var1.tail(len - 4);
+            // std::cout << "rest0 \n" << rest0 << std::endl;
+
+            Eigen::VectorXd rest_mix0 = mixing_probs(0, 0) * rest0 + mixing_probs(0, 1) * rest1;
+            Eigen::VectorXd rest_mix1 = mixing_probs(1, 0) * rest0 + mixing_probs(1, 1) * rest1;
+
+            xmix0.segment(idx + 4, len - 4) = rest_mix0;
+            xmix1.segment(idx + 4, len - 4) = rest_mix1;
+          }
+
+        }
+      else{
+        //Non-orientation states
+        xmix0.segment(idx, len) = mixing_probs(0, 0) * var0 + mixing_probs(0, 1) * var1;
+        xmix1.segment(idx, len) = mixing_probs(1, 0) * var0 + mixing_probs(1, 1) * var1;
+      }
+
+      // std::cout << "state: \n" << state->_variables[i]->value()
+      // state_1->_variables[i]->set_value(mix1)
+
+
+    idx += len;
+}
+
+
+// std::cout << "xmix0 \n" << xmix0<< std::endl;
+
+int cov_size = P0.rows();  // Assuming P0 and P1 are square and same size
+
+Eigen::MatrixXd Pmix0 = Eigen::MatrixXd::Zero(cov_size, cov_size);
+Eigen::MatrixXd Pmix1 = Eigen::MatrixXd::Zero(cov_size, cov_size);
+
+Eigen::VectorXd d0_mix0(cov_size);
+Eigen::VectorXd d1_mix0(cov_size);
+Eigen::VectorXd d0_mix1(cov_size);
+Eigen::VectorXd d1_mix1(cov_size);
+
+d0_mix0.setZero();
+d1_mix0.setZero();
+d0_mix1.setZero();
+d1_mix1.setZero();
+
+
+int idx_state = 0;
+int idx_state_1 = 0;  // index to track position in state/cov vector
+
+for (size_t i = 0; i < state->_variables.size(); i++) {
+    Eigen::VectorXd var0 = state->_variables[i]->value();
+    Eigen::VectorXd var1 = state_1->_variables[i]->value();
+    int len = var0.size();
+    // std::cout << "len \n" << len << std::endl;
+
+    if (len >= 4) {
+        // Quaternion part
+        Eigen::VectorXd q0 = var0.segment<4>(0);
+        Eigen::VectorXd q1 = var1.segment<4>(0);
+        Eigen::VectorXd qmix0 = xmix0.segment(idx_state, 4);
+        Eigen::VectorXd qmix1 = xmix1.segment(idx_state, 4);
+
+        // std::cout << "q0: \n" << q0 << std::endl;
+        // std::cout << "qmix0: \n" << qmix0 << std::endl;
+
+        // Rotation matrices
+        Eigen::Matrix3d R0 = quat_2_Rot(q0);
+        Eigen::Matrix3d R1 = quat_2_Rot(q1);
+        Eigen::Matrix3d Rmix0 = quat_2_Rot(qmix0);
+        Eigen::Matrix3d Rmix1 = quat_2_Rot(qmix1);
+        // std::cout << "R0 \n" << R0 <<std::endl;
+        // std::cout << "Rmix0 \n" << Rmix0 <<std::endl;
+
+        // Rotation error in tangent space (3D)
+        Eigen::Vector3d dtheta0_mix0 = log_so3(R0.transpose() * Rmix0);
+        Eigen::Vector3d dtheta1_mix0 = log_so3(R1.transpose() * Rmix0);
+        Eigen::Vector3d dtheta0_mix1 = log_so3(R0.transpose() * Rmix1);
+        Eigen::Vector3d dtheta1_mix1 = log_so3(R1.transpose() * Rmix1);
+        // std::cout << "dtheta_0_mix_0 \n" << dtheta0_mix0 <<std::endl; 
+
+        // Fill delta vectors for rotation (3D)
+        d0_mix0.segment(idx_state_1, 3) = dtheta0_mix0;
+        d1_mix0.segment(idx_state_1, 3) = dtheta1_mix0;
+        d0_mix1.segment(idx_state_1, 3) = dtheta0_mix1;
+        d1_mix1.segment(idx_state_1, 3) = dtheta1_mix1;
+        // std::cout << "d0_mix0 \n" << d0_mix0 << std::endl;
+
+        if (len > 4) {
+            // For the rest of the state elements after quaternion
+            Eigen::VectorXd rest0 = var0.tail(len - 4);
+            Eigen::VectorXd rest1 = var1.tail(len - 4);
+            Eigen::VectorXd restmix0 = xmix0.segment(idx_state + 4, len - 4);
+            Eigen::VectorXd restmix1 = xmix1.segment(idx_state + 4, len - 4);
+            // std::cout << "rest0 \n" << rest0 << std::endl;
+            // std::cout << "restmix0 \n" << restmix0 << std::endl;
+
+            // std::cout << "idx_state: \n" << (idx_state) << std::endl;
+
+            d0_mix0.segment(idx_state_1 + 3, len - 4) = rest0 - restmix0;
+            d1_mix0.segment(idx_state_1 + 3, len - 4) = rest1 - restmix0;
+
+            d0_mix1.segment(idx_state_1 + 3, len - 4) = rest0 - restmix1;
+            d1_mix1.segment(idx_state_1 + 3, len - 4) = rest1 - restmix1;
+        }
+
+        idx_state += (len); 
+        idx_state_1 += (len-1);
+        // std::cout << "idx_state_1: \n " <<idx_state_1 << std::endl; // Because quaternion 4 dims → 3 dims rotation + rest
+    } else {
+        // Non-orientation states (linear)
+        Eigen::VectorXd mix0 = xmix0.segment(idx_state, len);
+        Eigen::VectorXd mix1 = xmix1.segment(idx_state, len);
+
+        d0_mix0.segment(idx_state, len) = var0 - mix0;
+        d1_mix0.segment(idx_state, len) = var1 - mix0;
+
+        d0_mix1.segment(idx_state, len) = var0 - mix1;
+        d1_mix1.segment(idx_state, len) = var1 - mix1;
+
+        idx_state += len;
+    }
+}
+// std::cout << "dmix0 \n" << d0_mix0 << std::endl;
+// std::cout << "dmix1 \n" << d1_mix1 << std::endl;
+
+// Now compute the mixed covariance matrices
+Pmix0 = mixing_probs(0,0) * (P0 + d0_mix0 * d0_mix0.transpose())
+      + mixing_probs(0,1) * (P1 + d1_mix0 * d1_mix0.transpose());
+
+Pmix1 = mixing_probs(1,0) * (P0 + d0_mix1 * d0_mix1.transpose())
+      + mixing_probs(1,1) * (P1 + d1_mix1 * d1_mix1.transpose());
+
+  // std::cout << "diagonal pmix0: \n" << Pmix0.diagonal().transpose() << std::endl;
+  // std::cout << "diagonal p0: \n" << P0.diagonal().transpose() << std::endl;
+
+state->_Cov = Pmix0;
+state_1->_Cov = Pmix1;  
+
+idx = 0;
+for (size_t i = 0; i < state->_variables.size(); i++) {
+    int len = state->_variables[i]->value().size();
+
+    Eigen::VectorXd mix_var0 = xmix0.segment(idx, len);
+    Eigen::VectorXd mix_var1 = xmix1.segment(idx, len);
+
+    // Assign the new mixed values to each variable
+    state->_variables[i]->set_value(mix_var0);
+    state_1->_variables[i]->set_value(mix_var1);
+
+    idx += len;
+}
+// std::cout << "state: \n" << state->_variables[0]->value() << std::endl;
+// std::cout << "state_1: \n" << state_1->_variables[0]->value() << std::endl;
+
+// final imm state estimation 
+Eigen::VectorXd x0_final(total_state_size);
+Eigen::VectorXd x1_final(total_state_size); 
+
+Eigen::MatrixXd P0_final = state->_Cov;
+Eigen::MatrixXd P1_final = state_1->_Cov;
+double mu0 = mu(0);
+double mu1 = mu(1);
+
+int idx_final = 0;
+for (size_t i = 0; i < state->_variables.size(); i++){
+  Eigen::VectorXd var = state->_variables[i]->value();
+  int len = var.size();
+  x0_final.segment(idx_final, len) = state->_variables[i]->value();
+  x1_final.segment(idx_final, len) = state_1->_variables[i]->value();
+  idx_final += len;
+}
+// std::cout << x0_final << std::endl;
+
+Eigen::VectorXd x_combined(total_state_size);
+int idx_combined = 0;
+for (size_t i = 0; i < state->_variables.size(); i++){
+  Eigen::VectorXd var = state->_variables[i]->value();
+  int len = var.size();
+
+  if (len >= 4) {
+    Eigen::Vector4d q0 = x0_final.segment<4>(idx_combined);
+    Eigen::Vector4d q1 = x1_final.segment<4>(idx_combined);
+    // std::cout << "q0 \n" << q0 << std::endl;
+    
+    Eigen::MatrixXd R0 = quat_2_Rot(q0);
+    Eigen::MatrixXd R1 = quat_2_Rot(q1);
+
+    Eigen::Vector3d log0 = log_so3(R0);
+    Eigen::Vector3d log1 = log_so3(R1);
+
+    Eigen::VectorXd log_combined = mu0 * log0 + mu1 * log1;
+    Eigen::MatrixXd R_combined = exp_so3(log_combined);
+    Eigen::Vector4d q_combined = rot_2_quat(R_combined);
+
+    x_combined.segment(idx_combined, 4) = q_combined;
+
+    if(len > 4) {
+      Eigen::VectorXd rest0 = x0_final.segment(idx_combined + 4, len - 4);
+      Eigen::VectorXd rest1 = x1_final.segment(idx_combined + 4, len - 4);
+      x_combined.segment(idx_combined + 4, len - 4) = mu0 * rest0 + mu1 * rest1;
+
+    }
+
+  }
+  else{
+    Eigen::VectorXd v0 = x0_final.segment(idx, len);
+    Eigen::VectorXd v1 = x1_final.segment(idx, len);
+    x_combined.segment(idx_combined, len) = mu0 * v0 + mu1 * v1;
+  }
+  idx_combined += len;
+
+}
+
+Eigen::VectorXd dx0 = x0_final - x_combined;
+Eigen::VectorXd dx1 = x1_final - x_combined;
+
+int idx_cov = 0;
+int tangent_idx = 0;
+Eigen::VectorXd dx0_tangent(cov_size);
+Eigen::VectorXd dx1_tangent(cov_size);
+dx0_tangent.setZero();
+dx1_tangent.setZero();
+
+for (size_t i = 0; i < state->_variables.size(); i++){
+  auto var = state->_variables[i]->value();
+  int len = var.size();
+
+  if (len >= 4){
+    Eigen::VectorXd q0 = x0_final.segment(idx_cov, 4);
+    Eigen::VectorXd q1 = x1_final.segment(idx_cov, 4);
+    Eigen::VectorXd q_comb = x_combined.segment(idx_cov, 4);
+
+    Eigen::Matrix3d R0 = quat_2_Rot(q0);
+    Eigen::Matrix3d R1 = quat_2_Rot(q1);
+    Eigen::Matrix3d R_comb = quat_2_Rot(q_comb);
+
+    dx0_tangent.segment(tangent_idx, 3) = log_so3(R0.transpose() * R_comb);
+    dx1_tangent.segment(tangent_idx, 3) = log_so3(R1.transpose() * R_comb);
+
+    if (len > 4) {
+      dx0_tangent.segment(tangent_idx + 3, len - 4) = x0_final.segment(idx_cov + 4, len - 4) - x_combined.segment(idx_cov + 4, len -4);
+      dx1_tangent.segment(tangent_idx + 3, len - 4) = x1_final.segment(idx_cov + 4, len - 4) - x_combined.segment(idx_cov + 4, len -4);
+    }
+
+    tangent_idx += len - 1;
+    idx_cov += len;
+  } 
+  else {
+    dx0_tangent.segment(idx_cov, len) = dx0.segment(idx_cov, len);
+    dx1_tangent.segment(idx_cov, len) = dx1.segment(idx_cov, len);
+    idx_cov += len;
+  }
+  
+}
+
+// std::cout << "mu0 \n"  << mu0 << std::endl;
+// std::cout << "mu1 \n"  << mu1 << std::endl;
+
+// std::cout << "x combined \n " << x_combined << std::endl;
+
+Eigen::MatrixXd P_combined = mu0 * (P0_final + dx0_tangent * dx0_tangent.transpose()) +
+                             mu1 * (P1_final + dx1_tangent * dx1_tangent.transpose());
+
+
+
+std::shared_ptr<State> combined = std::make_shared<State>(params.state_options);
+combined->_Cov = P_combined;
+
+// Fill in x_combined into state variables
+idx = 0;
+for (size_t i = 0; i < combined->_variables.size(); i++) {
+    int len = combined->_variables[i]->value().size();
+    combined->_variables[i]->set_value(x_combined.segment(idx, len));
+    idx += len;
+}
+
+// Set it in the VioManager (so visualizer can use it)
+set_combined_state(combined);
+
+
 
   //===================================================================================
   // Debug info, and stats tracking
@@ -650,6 +1210,14 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
   timelastupdate = message.timestamp;
 
+  
+  // Update our distance traveled
+  if (timelastupdate_1 != -1 && state_1->_clones_IMU.find(timelastupdate_1) != state_1->_clones_IMU.end()) {
+    Eigen::Matrix<double, 3, 1> dx = state_1->_imu->pos() - state_1->_clones_IMU.at(timelastupdate_1)->pos();
+    distance_1 += dx.norm();
+  }
+  timelastupdate_1 = message.timestamp;  
+
   // Debug, print our current state
   PRINT_INFO("q_GtoI = %.3f,%.3f,%.3f,%.3f | p_IinG = %.3f,%.3f,%.3f | dist = %.2f (meters)\n", state->_imu->quat()(0),
              state->_imu->quat()(1), state->_imu->quat()(2), state->_imu->quat()(3), state->_imu->pos()(0), state->_imu->pos()(1),
@@ -657,9 +1225,18 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   PRINT_INFO("bg = %.4f,%.4f,%.4f | ba = %.4f,%.4f,%.4f\n", state->_imu->bias_g()(0), state->_imu->bias_g()(1), state->_imu->bias_g()(2),
              state->_imu->bias_a()(0), state->_imu->bias_a()(1), state->_imu->bias_a()(2));
 
+  PRINT_INFO("q_GtoI_1 = %.3f,%.3f,%.3f,%.3f | p_IinG_1 = %.3f,%.3f,%.3f | dist_1 = %.2f (meters)\n", state_1->_imu->quat()(0),
+             state_1->_imu->quat()(1), state_1->_imu->quat()(2), state_1->_imu->quat()(3), state_1->_imu->pos()(0), state_1->_imu->pos()(1),
+             state_1->_imu->pos()(2), distance_1);
+  PRINT_INFO("bg_1 = %.4f,%.4f,%.4f | ba_1 = %.4f,%.4f,%.4f\n", state_1->_imu->bias_g()(0), state_1->_imu->bias_g()(1), state_1->_imu->bias_g()(2),
+             state_1->_imu->bias_a()(0), state_1->_imu->bias_a()(1), state_1->_imu->bias_a()(2));
+
   // Debug for camera imu offset
   if (state->_options.do_calib_camera_timeoffset) {
     PRINT_INFO("camera-imu timeoffset = %.5f\n", state->_calib_dt_CAMtoIMU->value()(0));
+  }
+  if (state_1->_options.do_calib_camera_timeoffset) {
+    PRINT_INFO("camera-imu timeoffset = %.5f\n", state_1->_calib_dt_CAMtoIMU->value()(0));
   }
 
   // Debug for camera intrinsics
@@ -711,4 +1288,5 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
                state->_calib_imu_tg->value()(4), state->_calib_imu_tg->value()(5), state->_calib_imu_tg->value()(6),
                state->_calib_imu_tg->value()(7), state->_calib_imu_tg->value()(8));
   }
+  std::cout << "++++++++++++++++++++++++++++++++++++++++++++++++++" << std::endl;
 }

@@ -67,10 +67,12 @@ public:
     std::lock_guard<std::mutex> lock(_mutex_state);
     double time = INFINITY;
     for (const auto &clone_imu : _clones_IMU) {
+      // ROS_INFO("Checking IMU clone timestamp: %f", clone_imu.first);
       if (clone_imu.first < time) {
         time = clone_imu.first;
       }
     }
+    // ROS_INFO("Returning margtimestep: %f", time);
     return time;
   }
 
@@ -184,6 +186,9 @@ private:
   // This will allow it to access the below functions which should normally not be called
   // This prevents a developer from thinking that the "insert clone" will actually correctly add it to the covariance
   friend class StateHelper;
+  friend class UpdaterMSCKF;
+  friend class VioManager;
+  friend class IMMEstimator;
 
   /// Covariance of all active variables
   Eigen::MatrixXd _Cov;

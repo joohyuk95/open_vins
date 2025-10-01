@@ -60,6 +60,7 @@ namespace ov_msckf {
 
 class VioManager;
 class Simulator;
+class IMMEstimator;
 
 /**
  * @brief Helper class that will publish results onto the ROS framework.
@@ -80,13 +81,14 @@ public:
    * @param app Core estimator manager
    * @param sim Simulator if we are simulating
    */
-  ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_ptr<VioManager> app, std::shared_ptr<Simulator> sim = nullptr);
+  ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_ptr<ros::NodeHandle> nh_1,  std::shared_ptr<VioManager> app, std::shared_ptr<Simulator> sim = nullptr);
 
   /**
    * @brief Will setup ROS subscribers and callbacks
    * @param parser Configuration file parser
    */
   void setup_subscribers(std::shared_ptr<ov_core::YamlParser> parser);
+  // void setup_subscribers(std::shared_ptr<ov_core::YamlParser> parser, std::shared_ptr<ov_core::YamlParser> parser_1);
 
   /**
    * @brief Will visualize the system if we have new things
@@ -106,17 +108,30 @@ public:
   void visualize_final();
 
   /// Callback for inertial information
-  void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg);
+  // void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg);
 
+  //edited aqeel - second IMU processing
+  void callback_inertial();
+
+  void callback_imu(const sensor_msgs::Imu::ConstPtr &msg);
+  void callback_imu_1(const sensor_msgs::Imu::ConstPtr &msg);
   /// Callback for monocular cameras information
   void callback_monocular(const sensor_msgs::ImageConstPtr &msg0, int cam_id0);
 
   /// Callback for synchronized stereo camera information
   void callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::ImageConstPtr &msg1, int cam_id0, int cam_id1);
+  std::shared_ptr<IMMEstimator> imm_1;
 
 protected:
   /// Publish the current state
   void publish_state();
+
+  
+
+  //aqeel
+  void publish_state_1();
+
+  void publish_combined_state();
 
   /// Publish the active tracking image
   void publish_images();
@@ -133,6 +148,8 @@ protected:
   /// Global node handler
   std::shared_ptr<ros::NodeHandle> _nh;
 
+  std::shared_ptr<ros::NodeHandle> _nh_1;
+
   /// Core application of the filter system
   std::shared_ptr<VioManager> _app;
 
@@ -146,8 +163,15 @@ protected:
   ros::Publisher pub_loop_pose, pub_loop_point, pub_loop_extrinsic, pub_loop_intrinsics;
   std::shared_ptr<tf::TransformBroadcaster> mTfBr;
 
+  //aqeel
+  ros::Publisher pub_poseimu_1, pub_odomimu_1, pub_pathimu_1, pub_poseimu_c, pub_pathimu_c;
+
   // Our subscribers and camera synchronizers
   ros::Subscriber sub_imu;
+
+  //aqeel second IMU
+  ros::Subscriber sub_imu_1;
+
   std::vector<ros::Subscriber> subs_cam;
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
   std::vector<std::shared_ptr<message_filters::Synchronizer<sync_pol>>> sync_cam;
@@ -156,6 +180,14 @@ protected:
   // For path viz
   unsigned int poses_seq_imu = 0;
   std::vector<geometry_msgs::PoseStamped> poses_imu;
+
+  //aqeel
+  unsigned int poses_seq_imu_1 = 0;
+  std::vector<geometry_msgs::PoseStamped> poses_imu_1;
+
+  unsigned int poses_seq_imu_c = 0;
+  std::vector<geometry_msgs::PoseStamped> poses_imu_c;
+  
 
   // Groundtruth infomation
   ros::Publisher pub_pathgt, pub_posegt;

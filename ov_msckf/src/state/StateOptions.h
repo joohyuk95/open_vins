@@ -64,6 +64,8 @@ struct StateOptions {
   /// What model our IMU intrinsics are
   ImuModel imu_model = ImuModel::KALIBR;
 
+  // ImuModel imu_model_1 = ImuModel::KALIBR;
+
   /// Max clone size of sliding window
   int max_clone_size = 11;
 

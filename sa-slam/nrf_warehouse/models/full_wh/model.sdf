@@ -1,0 +1,39 @@
+<?xml version="1.0" ?>
+<sdf version="1.5">
+  <model name="full_wh">
+    <static>1</static>
+    <link name="link">
+      <collision name="collision">
+        <geometry>
+            <mesh> 
+                <uri>model://full_wh/meshes/model.dae</uri>
+                <scale>1 1 1</scale>
+            </mesh>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+                <mu>100</mu>
+                <mu2>50</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="visual">
+        <geometry>
+            <mesh> 
+                <uri>model://full_wh/meshes/model.dae</uri>
+                <scale>1 1 1</scale>
+            </mesh>
+        </geometry>
+        <!--material>
+            <script>
+                <uri>model://mymodel/materials/scripts</uri>
+                <uri>model://mymodel/materials/textures</uri>
+                <name>bodymat/Diffuse</name>
+            </script>
+        </material-->
+      </visual>
+    </link>
+  </model>
+</sdf>
